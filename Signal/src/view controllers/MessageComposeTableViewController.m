@@ -1,6 +1,6 @@
 //
 //  MessageComposeTableViewController.m
-//  
+//
 //
 //  Created by Dylan Bourgeois on 02/11/14.
 //
@@ -11,21 +11,22 @@
 #import "MessageComposeTableViewController.h"
 #import "MessagesViewController.h"
 #import "SignalsViewController.h"
-
-#import <MessageUI/MFMessageComposeViewController.h>
+#import "NotificationManifest.h"
+#import "PhoneNumberDirectoryFilterManager.h"
 
 #import "ContactTableViewCell.h"
 
+#define REFRESH_TIMEOUT 20
+
 @interface MessageComposeTableViewController () <UISearchBarDelegate, UISearchResultsUpdating>
 {
-    UIButton* sendTextButton;
-    NSString* currentSearchTerm;
-    
     NSArray* contacts;
     NSArray* searchResults;
 }
 
 @property (nonatomic, strong) UISearchController *searchController;
+@property NSArray *latestSortedAlphabeticalContactKeys;
+@property NSArray *latestContacts;
 
 @end
 
@@ -38,8 +39,10 @@
     
     contacts = [[Environment getCurrent] contactsManager].textSecureContacts;
     searchResults = contacts;
-
+    
     self.tableView.tableFooterView = [[UIView alloc]initWithFrame:CGRectZero];
+    
+    [self initializeRefreshControl];
 }
 
 - (void)didReceiveMemoryWarning {
@@ -64,19 +67,23 @@
     self.definesPresentationContext = YES;
     
     self.searchController.searchBar.searchBarStyle = UISearchBarStyleMinimal;
-    self.searchController.searchBar.delegate = self;
     
-    sendTextButton = [UIButton buttonWithType:UIButtonTypeRoundedRect];
-    UIColor *iosBlue = self.view.tintColor;
-    [sendTextButton setBackgroundColor:iosBlue];
-    [sendTextButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    sendTextButton.frame = CGRectMake(self.view.frame.origin.x, self.view.frame.origin.y + 44.0, self.view.frame.size.width, 44.0);
-    [self.view addSubview:sendTextButton];
-    sendTextButton.hidden = YES;
+    [self initializeObservers];
+    [self initializeRefreshControl];
+}
+
+-(void)initializeObservers
+{
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(contactsDidRefresh) name:NOTIFICATION_DIRECTORY_WAS_UPDATED object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(contactRefreshFailed) name:NOTIFICATION_DIRECTORY_FAILED object:nil];
+}
+
+-(void)initializeRefreshControl {
+    UIRefreshControl *refreshControl = [[UIRefreshControl alloc]init];
+    [refreshControl addTarget:self action:@selector(refreshContacts) forControlEvents:UIControlEventValueChanged];
+    self.refreshControl = refreshControl;
+    [self.tableView addSubview:self.refreshControl];
     
-    [sendTextButton addTarget:self
-               action:@selector(sendText)
-     forControlEvents:UIControlEventTouchUpInside];
 }
 
 #pragma mark - UISearchResultsUpdating
@@ -97,59 +104,18 @@
     [self updateSearchResultsForSearchController:self.searchController];
 }
 
-- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
-    sendTextButton.hidden = YES;
-}
-
 
 #pragma mark - Filter
 
 - (void)filterContentForSearchText:(NSString*)searchText scope:(NSString*)scope
 {
-    // (123) 456-7890 would be sanitized into 1234567890
-    NSCharacterSet *illegalCharacters = [NSCharacterSet characterSetWithCharactersInString:@" ()-+[]"];
-    NSString *sanitizedNumber = [[searchText componentsSeparatedByCharactersInSet:illegalCharacters] componentsJoinedByString:@""];
-    
-    NSPredicate *resultPredicate = [NSPredicate predicateWithFormat:@"(fullName contains[c] %@) OR (allPhoneNumbers contains[c] %@)", searchText, sanitizedNumber];
+    NSPredicate *resultPredicate = [NSPredicate predicateWithFormat:@"fullName contains[c] %@", searchText];
     searchResults = [contacts filteredArrayUsingPredicate:resultPredicate];
     if (!searchResults.count && _searchController.searchBar.text.length == 0) searchResults = contacts;
-    
-    // text to a non-signal number if we have no results and a valid phone #
-    if (searchResults.count == 0 && sanitizedNumber.length > 6) {
-        NSString *sendTextTo = @"Send SMS to: +";
-        sendTextTo = [sendTextTo stringByAppendingString:sanitizedNumber];
-        [sendTextButton setTitle:sendTextTo forState:UIControlStateNormal];
-        sendTextButton.hidden = NO;
-        currentSearchTerm = sanitizedNumber;
-    } else {
-        sendTextButton.hidden = YES;
-    }
 }
 
 
-#pragma mark - Send Normal Text
-
-- (void)sendText {
-    [self.searchController setActive:NO];
-    
-    UIDevice *device = [UIDevice currentDevice];
-    if ([[device model] isEqualToString:@"iPhone"] ) {
-        MFMessageComposeViewController *picker = [[MFMessageComposeViewController alloc] init];
-        picker.messageComposeDelegate = self;
-        
-        picker.recipients = [NSArray arrayWithObject:currentSearchTerm];
-        picker.body = @"Install signal, here is the link";
-        [self presentModalViewController:picker animated:YES];
-    } else {
-        // TODO: better backup for iPods (just don't support on)
-        UIAlertView *Notpermitted=[[UIAlertView alloc] initWithTitle:@"Alert" message:@"Your device doesn't support this feature." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil];
-        
-        [Notpermitted show];
-    }
-}
-
-
-#pragma mark - Table View Data Source
+#pragma mark - Table view data source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return 1;
@@ -171,13 +137,13 @@
     if (cell == nil) {
         cell = [[ContactTableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"ContactTableViewCell"];
     }
-
+    
     cell.shouldShowContactButtons = NO;
-
+    
     [cell configureWithContact:[self contactForIndexPath:indexPath]];
     
     tableView.tableFooterView = [[UIView alloc] initWithFrame:CGRectZero];
-
+    
     return cell;
 }
 
@@ -196,13 +162,15 @@
         [Environment messageIdentifier:identifier];
     }];
 }
-    
+
 
 -(void)tableView:(UITableView *)tableView didDeselectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     ContactTableViewCell * cell = (ContactTableViewCell*)[tableView cellForRowAtIndexPath:indexPath];
     cell.accessoryType = UITableViewCellAccessoryNone;
 }
+
+#pragma mark Refresh Controls
 
 -(Contact*)contactForIndexPath:(NSIndexPath*)indexPath
 {
@@ -213,16 +181,32 @@
     } else {
         contact = [contacts objectAtIndex:(NSUInteger)indexPath.row];
     }
-
+    
     return contact;
 }
 
+- (void)contactRefreshFailed {
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:TIMEOUT message:TIMEOUT_CONTACTS_DETAIL delegate:nil cancelButtonTitle:NSLocalizedString(@"OK", @"") otherButtonTitles:nil];
+    [alert show];
+    [self.refreshControl endRefreshing];
+}
+
+- (void)contactsDidRefresh {
+    [self updateSearchResultsForSearchController:self.searchController];
+    [self.refreshControl endRefreshing];
+}
+
+- (void)refreshContacts {
+    Environment *env = [Environment getCurrent];
+    PhoneNumberDirectoryFilterManager *manager = [env phoneDirectoryManager];
+    [manager forceUpdate];
+}
 
 #pragma mark - Navigation
 
 // In a storyboard-based application, you will often want to do a little preparation before navigation
 - (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
-  
+    
 }
 
 -(IBAction)closeAction:(id)sender
