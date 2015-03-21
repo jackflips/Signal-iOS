@@ -1587,10 +1587,8 @@ typedef enum : NSUInteger {
     
     NSString *documentsDir = [self applicationDocumentsDirectory];
     _waveformAudioFile = [NSURL fileURLWithPath:[documentsDir stringByAppendingString:@"/audiofile.mp4"]];
-    NSLog(@"file: %@", _waveformAudioFile);
     [self.recorder closeAudioFile];
     EZAudioFile *ezAudioFile = [EZAudioFile audioFileWithURL:_waveformAudioFile];
-    NSLog(@"audio file: %@", _waveformAudioFile);
     [ezAudioFile getWaveformDataWithCompletionBlock:^(float *waveformData, UInt32 length) {
         [_audioRecorderPlot generateWaveform:waveformData length:(int)length];
     }];
@@ -1661,6 +1659,8 @@ typedef enum : NSUInteger {
     self.inputToolbar.contentView.leftBarButtonItem.hidden = NO;
     self.inputToolbar.contentView.rightBarButtonItem.hidden = YES;
     [self.inputToolbar.contentView addSubview:_recordButton];
+    NSError *error;
+    [[NSFileManager defaultManager] removeItemAtURL:_waveformAudioFile error:&error];
     _waveformInComposeWindow = NO;
 }
 
